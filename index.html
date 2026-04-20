@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Spectrogram Lab</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◉</span>
+    <span class="title">Spectrogram Lab</span>
+  </div>
+  <div class="file-area" id="fileDrop">
+    <input type="file" id="fileInput" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden />
+    <button class="btn" id="openBtn">Open audio…</button>
+    <button class="btn primary" id="demoBtn" title="Synthesize a rich demo track (music + ultrasonic + hidden tone + drums)">▶ Play demo</button>
+    <span class="hint">or drag &amp; drop a file anywhere</span>
+    <span class="filename" id="filename">—</span>
+  </div>
+  <div class="top-actions">
+    <button class="btn ghost" id="recordBtn" title="Record the current view + audio as a WebM clip for sharing">● Rec clip</button>
+    <button class="btn ghost" id="resetBtn" title="Reset all settings to defaults">⟲ Reset</button>
+    <button class="btn ghost" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
+    <button class="btn ghost" id="exportBtn" title="Export spectrogram as PNG">⇩ PNG</button>
+    <button class="btn ghost" id="helpBtn" title="Keyboard shortcuts">?</button>
+  </div>
+</header>
+
+<main class="workspace">
+  <section class="left-panel">
+    <div class="panel">
+      <div class="panel-head">
+        <span>Waveform overview</span>
+        <span class="small" id="waveInfo">—</span>
+      </div>
+      <canvas id="waveformCanvas" class="wave-canvas"></canvas>
+    </div>
+
+    <div class="panel flex-grow">
+      <div class="panel-head">
+        <span>Main visualization</span>
+        <div class="mode-tabs" id="modeTabs">
+          <button class="tab active" data-mode="spectrogram">Spectrogram</button>
+          <button class="tab" data-mode="mel">Mel</button>
+          <button class="tab" data-mode="chroma">Chroma</button>
+          <button class="tab" data-mode="scalogram">Scalogram</button>
+          <button class="tab" data-mode="cochleagram">Cochleagram</button>
+          <button class="tab" data-mode="reassigned">Reassigned</button>
+          <button class="tab" data-mode="cepstrum">Cepstrum</button>
+          <button class="tab" data-mode="waterfall">Waterfall 3D</button>
+          <button class="tab" data-mode="features">Features</button>
+          <button class="tab" data-mode="harmonic">Harmonic</button>
+          <button class="tab" data-mode="percussive">Percussive</button>
+        </div>
+        <div class="tool-bar">
+          <button class="btn small" id="brushToggle" title="Step 1: enable brush. Then drag on the spectrogram to paint (red = cut, green = boost, cyan = smooth). Step 2: press Apply.">🖌 Brush</button>
+          <label class="tool-ctrl">Mode
+            <select id="brushMode" title="Brush behaviour">
+              <option value="attenuate" selected>Attenuate</option>
+              <option value="amplify">Amplify</option>
+              <option value="erase">Erase</option>
+              <option value="smooth">Smooth</option>
+              <option value="harmonic-preserve">Preserve peaks</option>
+            </select>
+          </label>
+          <label class="tool-ctrl">Size <input type="range" id="brushSize" min="4" max="100" step="1" value="20" /></label>
+          <label class="tool-ctrl">Gain
+            <select id="brushGain">
+              <option value="0">Mute (0×)</option>
+              <option value="0.25">−12 dB</option>
+              <option value="0.5" selected>−6 dB</option>
+              <option value="2">+6 dB</option>
+              <option value="4">+12 dB</option>
+            </select>
+          </label>
+          <label class="tool-ctrl" title="Also paint at 2×, 3×, … of the brushed frequency">
+            <input type="checkbox" id="brushHarmonicLock" /> Harmonic lock
+          </label>
+          <label class="tool-ctrl" title="Double-click to flood-fill similar-energy cells">
+            <input type="checkbox" id="brushAutoSelect" /> Auto-select
+          </label>
+          <button class="btn small" id="brushClear">Clear</button>
+          <button class="btn small primary" id="brushApply">Apply</button>
+          <button class="btn small" id="audioRevert" title="Revert to original audio">Revert audio</button>
+        </div>
+      </div>
+      <div class="spec-wrap">
+        <canvas id="specCanvas" class="spec-canvas"></canvas>
+        <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
+        <div class="hover-readout" id="hoverReadout"></div>
+        <div class="empty-state" id="emptyState">
+          <div class="empty-logo">◉</div>
+          <div class="empty-title">Spectrogram Lab</div>
+          <div class="empty-subtitle">Drop a file, open one, or try the demo track</div>
+          <div class="empty-actions">
+            <button class="btn primary large" id="emptyDemoBtn">▶ Play demo track</button>
+            <button class="btn" id="emptyOpenBtn">Open audio file…</button>
+          </div>
+          <div class="empty-chips">
+            <span class="chip">♫ Musicians — key + BPM detection, chromagram</span>
+            <span class="chip">🔎 Researchers — ultrasonic + LSB steganalysis</span>
+            <span class="chip">🎨 Visual — 11 time-frequency views, 8 color maps</span>
+            <span class="chip">⚡ Instant — no install, no account, no upload</span>
+          </div>
+        </div>
+        <div class="rec-indicator" id="recIndicator">
+          <span class="rec-dot"></span>
+          <span id="recLabel">REC 00:00</span>
+        </div>
+      </div>
+      <div class="panel-foot">
+        <div class="legend" id="dbLegend"></div>
+        <div class="zoom-controls">
+          <label>T-Zoom <input type="range" id="tZoom" min="1" max="20" step="0.1" value="1" /></label>
+          <label>F-Zoom <input type="range" id="fZoom" min="1" max="8" step="0.1" value="1" /></label>
+          <label>T-Pan <input type="range" id="tPan" min="0" max="1" step="0.001" value="0" /></label>
+          <label>F-Pan <input type="range" id="fPan" min="0" max="1" step="0.001" value="0" /></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span>Live spectrum</span>
+        <span class="small" id="peakInfo">—</span>
+      </div>
+      <canvas id="barsCanvas" class="bars-canvas"></canvas>
+    </div>
+
+    <div class="panel">
+      <div class="transport">
+        <button class="btn big" id="playBtn" title="Play/Pause (Space)">▶</button>
+        <button class="btn" id="stopBtn" title="Stop (S)">■</button>
+        <button class="btn" id="seekBackBtn" title="Seek -5s (←)">«</button>
+        <button class="btn" id="seekFwdBtn" title="Seek +5s (→)">»</button>
+        <div class="time" id="timeLabel">00:00 / 00:00</div>
+        <input type="range" id="seekBar" class="seek" min="0" max="1" step="0.0001" value="0" />
+        <label class="control">Vol<input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" /></label>
+        <label class="control">Rate<input type="range" id="rate" min="0.25" max="2" step="0.05" value="1" /><span class="small" id="rateLabel">1.00×</span></label>
+        <label class="control"><input type="checkbox" id="loopChk" /> Loop A-B</label>
+      </div>
+    </div>
+  </section>
+
+  <aside class="right-panel">
+    <div class="panel">
+      <div class="panel-head"><span>Analysis (STFT)</span></div>
+      <div class="control-grid">
+        <label>FFT size
+          <select id="fftSize">
+            <option>256</option><option>512</option>
+            <option selected>1024</option>
+            <option>2048</option><option>4096</option><option>8192</option>
+          </select>
+        </label>
+        <label>Overlap
+          <select id="overlap">
+            <option value="0.25">25%</option>
+            <option value="0.5" selected>50%</option>
+            <option value="0.75">75%</option>
+            <option value="0.875">87.5%</option>
+          </select>
+        </label>
+        <label>Window
+          <select id="windowFn">
+            <option value="hann" selected>Hann</option>
+            <option value="hamming">Hamming</option>
+            <option value="blackman">Blackman</option>
+            <option value="bartlett">Bartlett</option>
+            <option value="rect">Rectangular</option>
+            <option value="flattop">Flat Top</option>
+          </select>
+        </label>
+        <label>Smoothing
+          <input type="range" id="smoothing" min="0" max="0.95" step="0.01" value="0.6" />
+        </label>
+        <label>Min freq (Hz)
+          <input type="number" id="minFreq" value="20" min="0" step="10" title="Low cut for playback and display. Ultrasonic content (> 20 kHz) is shown when the file's sample rate allows it." />
+        </label>
+        <label>Max freq (Hz)
+          <input type="number" id="maxFreq" value="20000" min="100" step="100" title="High cut. Raise above 20 000 to inspect ultrasonic content when the file sample rate is > 40 kHz." />
+        </label>
+        <label>Channels
+          <select id="channelMode">
+            <option value="mono" selected>Mixed mono</option>
+            <option value="left">Left only</option>
+            <option value="right">Right only</option>
+            <option value="stereo">Stereo split</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span>Display</span></div>
+      <div class="control-grid">
+        <label>Freq scale
+          <select id="freqScale">
+            <option value="linear">Linear</option>
+            <option value="log" selected>Log</option>
+          </select>
+        </label>
+        <label>Color map
+          <select id="colorMap">
+            <option value="viridis" selected>Viridis</option>
+            <option value="magma">Magma</option>
+            <option value="inferno">Inferno</option>
+            <option value="plasma">Plasma</option>
+            <option value="turbo">Turbo</option>
+            <option value="gray">Grayscale</option>
+            <option value="heat">Heatmap</option>
+            <option value="cool">Cool</option>
+          </select>
+        </label>
+        <label>Style
+          <select id="specStyle">
+            <option value="scroll" selected>Scrolling</option>
+            <option value="static">Static full track</option>
+          </select>
+        </label>
+        <label>Min dB
+          <input type="range" id="minDb" min="-120" max="-20" step="1" value="-90" />
+          <span class="small" id="minDbLbl">-90</span>
+        </label>
+        <label>Max dB
+          <input type="range" id="maxDb" min="-40" max="0" step="1" value="-10" />
+          <span class="small" id="maxDbLbl">-10</span>
+        </label>
+        <label>Gamma
+          <input type="range" id="gamma" min="0.3" max="3" step="0.05" value="1" />
+          <span class="small" id="gammaLbl">1.00</span>
+        </label>
+        <label><input type="checkbox" id="gridChk" checked /> Gridlines</label>
+        <label><input type="checkbox" id="harmonicChk" /> Harmonic tracker</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span>Parametric EQ</span>
+        <label class="small"><input type="checkbox" id="eqBypass" /> Bypass</label>
+      </div>
+      <div id="eqControls" class="eq-panel"></div>
+      <div class="panel-foot">
+        <button class="btn small" id="eqReset">Reset EQ</button>
+        <label class="small"><input type="checkbox" id="eqShowCurve" checked /> Show curve</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span>Processing</span></div>
+      <div class="proc-grid">
+        <button class="btn small" id="hpsAnalyze" title="Analyze harmonic-percussive separation">Analyze HPS</button>
+        <button class="btn small" id="hpsHarmonic" title="Render and play harmonic-only audio">Isolate harmonic</button>
+        <button class="btn small" id="hpsPercussive" title="Render and play percussive-only audio">Isolate percussive</button>
+        <label class="small">HPS kernel
+          <select id="hpsKernel">
+            <option value="11">11</option>
+            <option value="17" selected>17</option>
+            <option value="25">25</option>
+            <option value="33">33</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span>Presets</span></div>
+      <div class="preset-row">
+        <button class="btn small" data-preset="music">Music</button>
+        <button class="btn small" data-preset="speech">Speech</button>
+        <button class="btn small" data-preset="hifi">Hi-fi detail</button>
+        <button class="btn small" data-preset="transient">Transient</button>
+      </div>
+    </div>
+
+    <div class="panel pro-panel">
+      <div class="panel-head">
+        <span>Pro Analysis <span class="pro-tag">PRO</span></span>
+        <button class="btn small primary" id="proRun" title="Compute LUFS / true-peak / key / BPM for the whole track">Analyze track</button>
+      </div>
+      <div class="pro-cards" id="proCards">
+        <div class="pro-card">
+          <div class="pro-card-head">Loudness</div>
+          <div class="pro-row"><span>Integrated</span><b id="mLufsI">—</b></div>
+          <div class="pro-row"><span>Momentary (max)</span><b id="mLufsM">—</b></div>
+          <div class="pro-row"><span>Short-term (max)</span><b id="mLufsS">—</b></div>
+          <div class="pro-row"><span>Loudness Range</span><b id="mLra">—</b></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Peaks &amp; Stereo</div>
+          <div class="pro-row"><span>True peak</span><b id="mTP">—</b></div>
+          <div class="pro-row"><span>Sample peak</span><b id="mSP">—</b></div>
+          <div class="pro-row"><span>Correlation</span><b id="mCorr">—</b></div>
+          <div class="pro-row"><span>Width (S/M+S)</span><b id="mWidth">—</b></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Music</div>
+          <div class="pro-row"><span>Key</span><b id="mKey">—</b></div>
+          <div class="pro-row"><span>BPM</span><b id="mBpm">—</b></div>
+          <div class="pro-row"><span>Noise floor</span><b id="mNoise">—</b></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Live meters</div>
+          <div class="pro-row"><span>Momentary</span><b id="mLiveM">—</b></div>
+          <div class="pro-row"><span>Short-term</span><b id="mLiveS">—</b></div>
+          <div class="pro-row"><span>Peak</span><b id="mLivePk">—</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel pro-panel">
+      <div class="panel-head">
+        <span>Compliance <span class="pro-tag">PRO</span></span>
+        <select id="complianceTarget" class="small" title="Choose a loudness standard">
+          <option value="spotify" selected>Spotify (−14 LUFS)</option>
+          <option value="apple">Apple Music (−16 LUFS)</option>
+          <option value="youtube">YouTube (−14 LUFS)</option>
+          <option value="amazon">Amazon Music (−14 LUFS)</option>
+          <option value="tidal">Tidal (−14 LUFS)</option>
+          <option value="ebu_r128">EBU R128 (−23 LUFS)</option>
+          <option value="atsc">ATSC A/85 (−24 LUFS)</option>
+          <option value="acx">ACX Audiobook</option>
+          <option value="podcast">Podcast (−16 LUFS)</option>
+        </select>
+      </div>
+      <div id="complianceChecks" class="compliance-checks"><span class="small">Run &ldquo;Analyze track&rdquo; to check compliance.</span></div>
+      <div class="panel-foot">
+        <button class="btn small" id="complianceExport" title="Save a printable HTML report">⇩ Save HTML report</button>
+      </div>
+    </div>
+
+    <div class="panel pro-panel">
+      <div class="panel-head">
+        <span>Restoration presets <span class="pro-tag">PRO</span></span>
+      </div>
+      <div class="proc-grid">
+        <button class="btn small" data-rest="hum" title="Notch mains hum (50/60 Hz + harmonics)">Hum removal</button>
+        <button class="btn small" data-rest="rumble" title="High-pass below cutoff">Rumble filter</button>
+        <button class="btn small" data-rest="hiss" title="Wiener-style hiss reduction">Hiss reduction</button>
+        <button class="btn small" data-rest="deess" title="Reduce sibilance (4-9 kHz)">De-ess</button>
+        <button class="btn small" data-rest="declick" title="Attenuate broadband click frames">Declick</button>
+      </div>
+      <div class="panel-foot">
+        <label class="small">Hum mains
+          <select id="restHumMains">
+            <option value="0" selected>Auto</option>
+            <option value="50">50 Hz</option>
+            <option value="60">60 Hz</option>
+          </select>
+        </label>
+        <label class="small">Rumble cutoff
+          <input type="number" id="restRumbleHz" min="20" max="250" step="5" value="80" /> Hz
+        </label>
+      </div>
+      <div class="panel-foot" id="restStatus" style="color:#7e8ea6; font-size:12px;"></div>
+    </div>
+
+    <div class="panel pro-panel">
+      <div class="panel-head">
+        <span>Anomaly scan <span class="pro-tag">PRO</span></span>
+        <button class="btn small primary" id="anomalyRun" title="Scan for hidden content: ultrasonic energy, sustained tones, broadband bursts, LSB steganography, and drawn shapes">Scan for anomalies</button>
+      </div>
+      <div id="anomalySummary" class="compliance-checks"><span class="small">Load a file and click &ldquo;Scan for anomalies&rdquo;. Works best on lossless 44.1 / 48 / 96 kHz WAV or FLAC.</span></div>
+      <div class="pro-cards" id="anomalyCards" style="display:none;">
+        <div class="pro-card">
+          <div class="pro-card-head">Ultrasonic (&gt; 18 kHz)</div>
+          <div class="pro-row"><span>Present?</span><b id="aUltraFlag">—</b></div>
+          <div class="pro-row"><span>Energy fraction</span><b id="aUltraFrac">—</b></div>
+          <div class="pro-row"><span>Peak</span><b id="aUltraPeak">—</b></div>
+          <div class="pro-row"><span>Peak freq</span><b id="aUltraFreq">—</b></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Sustained tones</div>
+          <div class="pro-row"><span>Count</span><b id="aTonesCount">—</b></div>
+          <div id="aTonesList" class="small" style="max-height:140px; overflow:auto;"></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Broadband bursts</div>
+          <div class="pro-row"><span>Count</span><b id="aBurstsCount">—</b></div>
+          <div id="aBurstsList" class="small" style="max-height:140px; overflow:auto;"></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">LSB steganalysis</div>
+          <div class="pro-row"><span>Chi² z-score</span><b id="aLsbZ">—</b></div>
+          <div class="pro-row"><span>LSB autocorr</span><b id="aLsbAc">—</b></div>
+          <div class="pro-row"><span>Verdict</span><b id="aLsbVerdict">—</b></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Geometry</div>
+          <div class="pro-row"><span>Edge density</span><b id="aGeoEdge">—</b></div>
+          <div class="pro-row"><span>Orient. entropy</span><b id="aGeoEnt">—</b></div>
+          <div class="pro-row"><span>Hot spots</span><b id="aGeoHot">—</b></div>
+        </div>
+        <div class="pro-card">
+          <div class="pro-card-head">Summary</div>
+          <div class="pro-row"><span>Suspicion score</span><b id="aScore">—</b></div>
+          <div class="pro-row"><span>Verdict</span><b id="aVerdict">—</b></div>
+          <div id="aNotes" class="small" style="color:#7e8ea6;"></div>
+        </div>
+      </div>
+      <div class="panel-foot">
+        <button class="btn small" id="anomalyUltra" title="Set display and playback to ultrasonic (18 kHz → Nyquist)">Show ultrasonic only</button>
+        <button class="btn small" id="anomalyFull" title="Reset display to 20–20 000 Hz">Reset range</button>
+        <button class="btn small primary" id="anomalyHunt" title="Cinematic sweep: auto-seek through every flagged hotspot, loop 2s at each" disabled>🎯 Play hunt</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span>Status</span></div>
+      <div id="status" class="status small">Idle.</div>
+    </div>
+  </aside>
+</main>
+
+<div id="errorToast" class="toast hidden"></div>
+
+<dialog id="helpDialog" class="help-dialog">
+  <h3>Keyboard shortcuts</h3>
+  <ul>
+    <li><b>Space</b> — play / pause</li>
+    <li><b>S</b> — stop</li>
+    <li><b>← / →</b> — seek −/+ 5s</li>
+    <li><b>Shift+← / Shift+→</b> — seek −/+ 1s</li>
+    <li><b>↑ / ↓</b> — volume</li>
+    <li><b>+ / −</b> — frequency zoom</li>
+    <li><b>[ / ]</b> — time zoom</li>
+    <li><b>M</b> — cycle color map</li>
+    <li><b>L</b> — toggle log/linear freq</li>
+    <li><b>F</b> — fullscreen</li>
+    <li><b>A / B</b> — set loop points, <b>Esc</b> to clear</li>
+  </ul>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
+<script src="js/colormaps.js"></script>
+<script src="js/fft.js"></script>
+<script src="js/audio-engine.js"></script>
+<script src="js/analyzer.js"></script>
+<script src="js/waveform.js"></script>
+<script src="js/renderer.js"></script>
+<script src="js/visualizations.js"></script>
+<script src="js/eq.js"></script>
+<script src="js/spectral-edit.js"></script>
+<script src="js/metering.js"></script>
+<script src="js/key-tempo.js"></script>
+<script src="js/restoration.js"></script>
+<script src="js/compliance.js"></script>
+<script src="js/anomaly.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

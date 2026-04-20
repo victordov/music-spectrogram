@@ -1,0 +1,34 @@
+{
+  "name": "spectrogram-lab",
+  "version": "1.0.0",
+  "description": "Real-time audio spectrogram + DSP workbench running entirely in the browser.",
+  "license": "MIT",
+  "author": "Victor Dovgan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/victordov/music-spectrogram.git"
+  },
+  "homepage": "https://github.com/victordov/music-spectrogram#readme",
+  "bugs": {
+    "url": "https://github.com/victordov/music-spectrogram/issues"
+  },
+  "keywords": [
+    "spectrogram",
+    "audio",
+    "dsp",
+    "stft",
+    "fft",
+    "wavelet",
+    "mel",
+    "chroma",
+    "cochleagram",
+    "web-audio",
+    "visualization"
+  ],
+  "scripts": {
+    "start": "python3 -m http.server 5173",
+    "serve": "python3 -m http.server 5173",
+    "test": "node tests/verify_pro.js"
+  },
+  "private": false
+}

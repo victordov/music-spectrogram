@@ -1,0 +1,42 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Node (only relevant if you add deps later)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+
+# Local experiments / scratch
+tmp/
+scratch/
+*.local
+*.log
+
+# User media — don't commit large audio / screenshots into the repo
+# unless they're intentionally placed in docs/screenshots or samples/.
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+!samples/**
+!docs/**
+
+# Build output (there is no build step today — left for future)
+dist/
+build/
+coverage/
