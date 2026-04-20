@@ -112,7 +112,12 @@ report (Spotify, Apple Music, YouTube, Tidal, EBU R128, ATSC A/85, ACX, …).
 
 <p align="center"><img src="docs/screenshots/12-pro-panel.png" alt="Pro analysis panel with LUFS, peaks, music, and compliance sections" width="80%" /></p>
 
-**⑦ Hunt anomalies automatically.** The scanner reports ultrasonic content,
+**⑦ Mark regions and paint exact boxes.** Shift-drag on the spectrogram to
+define a time/frequency rectangle, push it into the mask with *Paint box*, or
+store it as an annotation marker/region. Annotation state is saved per track
+in the browser and can be exported/imported as JSON.
+
+**⑧ Hunt anomalies automatically.** The scanner reports ultrasonic content,
 sustained pilot tones, broadband bursts, LSB steganalysis, and geometric
 hotspots. Press *🎯 Play hunt* to auto-seek to each hotspot in turn.
 
@@ -194,6 +199,17 @@ flood-fill, and offline ISTFT-based resynthesis. Harmonic-percussive
 separation (HPS) via median-filter Wiener masks — isolate either component
 and play it back.
 
+The **Precise Spectral Selection** panel complements the freehand brush with
+an exact rectangular edit workflow: enter start/end/low/high numerically,
+pull the current loop or viewport into the box, then apply that rectangle to
+the spectral mask using the current brush mode. Shift-drag on the
+spectrogram creates the same box directly from the canvas.
+
+The **Annotations** panel stores time markers and time/frequency regions on
+top of the current track. Markers draw as vertical guides, regions draw as
+boxed overlays, and both can be recalled from the side list with *Seek*.
+Annotations persist per track in `localStorage` and can be shared as JSON.
+
 ### Convenience
 Four presets (Music, Speech, Hi-fi detail, Transient), PNG export of the
 current view, global "Reset" that restores every control to defaults and
@@ -260,6 +276,9 @@ pass over the decoded buffer. Four cards populate:
 - *Stereo correlation* — Pearson correlation of L and R. `+1` = mono-safe,
   `0` = wide/independent, `−1` = phase-inverted (problematic).
 - *Mid/side ratio* — ‖M‖/‖S‖, gives a rough sense of stereo width.
+- *Stereo delay* — best short-lag cross-correlation offset between L and R,
+  useful for spotting skewed transfers or widened masters.
+- *Stereo balance* — RMS level delta between left and right channels.
 
 **Music**
 - *Key* — Krumhansl-Kessler profile correlation over a 24-way template
@@ -273,10 +292,24 @@ pass over the decoded buffer. Four cards populate:
 
 **Live meters**
 Running approximations that update ~25×/s during playback:
-*Momentary LUFS*, *Short-term LUFS* and *Live true peak dBTP*. These are
+*Momentary LUFS*, *Short-term LUFS*, *Live true peak dBTP*, per-channel live
+peaks, and live stereo correlation. These are
 approximate because they read `AnalyserNode.getFloatTimeDomainData` which
 returns the most recent 2048 samples (with overlap between ticks). For
 certification-grade numbers, use the offline "Analyze track" values.
+
+### Stereo Diagnostics — vectorscope + mono-safety
+
+The dedicated **Stereo Diagnostics** card renders a compact goniometer from a
+live stereo window around the playhead and summarises the current image as:
+
+- *Mode* — near-mono / stereo / wide stereo / out of phase
+- *Imbalance* — instantaneous L/R RMS delta
+- *Mono-safe* — quick warning when correlation drops into risky territory
+
+Because offline spectral edits and HPS renders now rebuild the audio buffer
+with all original channels intact, these diagnostics remain valid after an
+edit instead of silently degrading to mono.
 
 ### Compliance — one-click platform QC
 
@@ -547,8 +580,11 @@ arrays) are kept only while they're needed to derive alt grids, then dropped.
 ### Stereo handling
 
 `channelMode` (mono / left / right / stereo-split) only affects the **analysis
-mix**; the player always uses the original `AudioBuffer`. Switching modes
-triggers a fresh worker analysis but does not touch playback.
+mix**; the player always uses the current multichannel `AudioBuffer`.
+Switching modes triggers a fresh worker analysis but does not touch playback.
+Offline spectral edits, HPS isolation, and revert all preserve channel count,
+so stereo metering and diagnostics continue to reflect the actual rendered
+buffer.
 
 ---
 
@@ -829,16 +865,20 @@ _Expected after step J:_
 | Brush: erase | Both gain and smoothing masks relax back to identity |
 | Brush: smooth | Paints into the smoothing mask only; applied as ±3-bin tent blur in ISTFT |
 | Brush: preserve-peaks | Skips bins within ±3 of detected spectral peaks |
+| Precise selection | Shift-drag or numeric entry defines a time/frequency box and redraws it on the overlay |
+| Paint box | Applies the active selection rectangle through the current brush mode |
+| Annotations | Markers and regions render on the overlay, persist per track, and can be exported/imported as JSON |
 | Harmonic lock | Paints at 1×, 2×, …, 6× the fundamental, strength ∝ 1/√k |
 | Auto-select (dbl-click) | Flood-fills a connected region within 12 dB of the seed brightness; capped at 60 000 cells |
 | Apply brush | Resynthesises via ISTFT in the worker; replaces the audio buffer |
-| Revert audio | Restores the original decoded buffer + resets all edits |
+| Revert audio | Restores the original decoded buffer + resets all edits without losing stereo layout |
 | HPS Analyse | Enables the Harmonic and Percussive view tabs |
-| HPS Isolate | Replaces the playing audio with the isolated component |
+| HPS Isolate | Replaces the playing audio with the isolated component while preserving channel count |
 | Loop A–B | Press A to set start, B after start to set end; shaded region on waveform and spectrogram |
 | Export PNG | Downloads `<basename>_<mode>.png` of the current canvas |
 | Reset | Fully restores defaults and reverts edited audio (keeps playback going) |
 | Fullscreen | Whole page enters fullscreen; layout stays responsive |
+| Stereo diagnostics | Vectorscope, live correlation, imbalance, and mono-safe status update during playback |
 | Responsive resize | Scroll history is preserved on window resize |
 
 ---

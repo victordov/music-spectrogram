@@ -202,6 +202,15 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .preset-row { padding: 8px 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+.compact-actions {
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.inline-actions {
+  display: flex;
+  gap: 6px;
+}
 
 .tool-bar {
   display: flex; align-items: center; gap: 8px;
@@ -321,6 +330,61 @@ input[type="range"]::-moz-range-thumb {
   font-size: 10px; cursor: pointer;
 }
 .anomaly-row .seek:hover { background: rgba(110,180,255,0.1); }
+
+.annotation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.annotation-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 8px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.annotation-label {
+  width: 100%;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.annotation-meta {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.annotation-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.stereo-wrap {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stereo-scope {
+  width: 100%;
+  height: 180px;
+  display: block;
+  background: #05070a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.stereo-readouts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
 
 @media (max-width: 900px) {
   .workspace { grid-template-columns: 1fr; }

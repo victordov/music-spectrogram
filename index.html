@@ -54,7 +54,7 @@
           <button class="tab" data-mode="harmonic">Harmonic</button>
           <button class="tab" data-mode="percussive">Percussive</button>
         </div>
-        <div class="tool-bar">
+      <div class="tool-bar">
           <button class="btn small" id="brushToggle" title="Step 1: enable brush. Then drag on the spectrogram to paint (red = cut, green = boost, cyan = smooth). Step 2: press Apply.">🖌 Brush</button>
           <label class="tool-ctrl">Mode
             <select id="brushMode" title="Brush behaviour">
@@ -276,6 +276,53 @@
       </div>
     </div>
 
+    <div class="panel">
+      <div class="panel-head"><span>Precise Spectral Selection</span></div>
+      <div class="control-grid">
+        <label>Start (s)
+          <input type="number" id="selStart" min="0" step="0.001" value="0" />
+        </label>
+        <label>End (s)
+          <input type="number" id="selEnd" min="0" step="0.001" value="1" />
+        </label>
+        <label>Low (Hz)
+          <input type="number" id="selLow" min="0" step="1" value="200" />
+        </label>
+        <label>High (Hz)
+          <input type="number" id="selHigh" min="0" step="1" value="4000" />
+        </label>
+      </div>
+      <div class="panel-foot compact-actions">
+        <button class="btn small" id="selFromLoop">From loop</button>
+        <button class="btn small" id="selFromView">From view</button>
+        <button class="btn small" id="selClear">Clear</button>
+        <button class="btn small" id="selLoop">Loop sel</button>
+        <button class="btn small primary" id="selApply">Paint box</button>
+      </div>
+      <div class="panel-foot">
+        <span class="small">Shift-drag on the spectrogram to draw a precise time/frequency box.</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span>Annotations</span>
+        <div class="inline-actions">
+          <button class="btn small" id="annoAddMarker">+ Marker</button>
+          <button class="btn small" id="annoAddRegion">+ Region</button>
+        </div>
+      </div>
+      <div class="panel-foot compact-actions">
+        <button class="btn small" id="annoExport">⇩ JSON</button>
+        <button class="btn small" id="annoImportBtn">⇧ Import</button>
+        <span class="small" id="annoStatus">Saved per track in this browser.</span>
+      </div>
+      <input type="file" id="annoImport" accept="application/json,.json" hidden />
+      <div id="annotationList" class="annotation-list">
+        <div class="small" style="padding:8px 10px;">No annotations yet.</div>
+      </div>
+    </div>
+
     <div class="panel pro-panel">
       <div class="panel-head">
         <span>Pro Analysis <span class="pro-tag">PRO</span></span>
@@ -295,6 +342,8 @@
           <div class="pro-row"><span>Sample peak</span><b id="mSP">—</b></div>
           <div class="pro-row"><span>Correlation</span><b id="mCorr">—</b></div>
           <div class="pro-row"><span>Width (S/M+S)</span><b id="mWidth">—</b></div>
+          <div class="pro-row"><span>Delay</span><b id="mDelay">—</b></div>
+          <div class="pro-row"><span>Balance</span><b id="mBalance">—</b></div>
         </div>
         <div class="pro-card">
           <div class="pro-card-head">Music</div>
@@ -307,6 +356,21 @@
           <div class="pro-row"><span>Momentary</span><b id="mLiveM">—</b></div>
           <div class="pro-row"><span>Short-term</span><b id="mLiveS">—</b></div>
           <div class="pro-row"><span>Peak</span><b id="mLivePk">—</b></div>
+          <div class="pro-row"><span>L peak</span><b id="mLiveL">—</b></div>
+          <div class="pro-row"><span>R peak</span><b id="mLiveR">—</b></div>
+          <div class="pro-row"><span>Live corr</span><b id="mLiveCorr">—</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel pro-panel">
+      <div class="panel-head"><span>Stereo Diagnostics <span class="pro-tag">PRO</span></span></div>
+      <div class="stereo-wrap">
+        <canvas id="stereoScopeCanvas" class="stereo-scope"></canvas>
+        <div class="stereo-readouts">
+          <div class="pro-row"><span>Mode</span><b id="stMode">—</b></div>
+          <div class="pro-row"><span>Imbalance</span><b id="stImbalance">—</b></div>
+          <div class="pro-row"><span>Mono-safe</span><b id="stMonoSafe">—</b></div>
         </div>
       </div>
     </div>

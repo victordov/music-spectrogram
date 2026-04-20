@@ -127,12 +127,16 @@
       else this._emitState();
     }
 
-    // Build an AudioBuffer from mono Float32Array samples at the current sample rate.
+    // Build an AudioBuffer from either mono samples or an array of channel buffers.
     samplesToBuffer(samples, sampleRate) {
       const ctx = this.ensureCtx();
       const sr = sampleRate || this.sampleRate || ctx.sampleRate;
-      const buf = ctx.createBuffer(1, samples.length, sr);
-      buf.copyToChannel(samples, 0, 0);
+      const channels = Array.isArray(samples) ? samples : [samples];
+      const length = channels.length ? channels[0].length : 0;
+      const buf = ctx.createBuffer(Math.max(1, channels.length), length, sr);
+      for (let c = 0; c < channels.length; c++) {
+        buf.copyToChannel(channels[c], c, 0);
+      }
       return buf;
     }
 

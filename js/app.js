@@ -34,8 +34,22 @@
     // New: audio-editing state.
     originalBuffer: null,       // AudioBuffer snapshot for revert
     originalSamples: null,      // Float32Array mono mix of originalBuffer
+    originalChannels: null,     // Float32Array[] of original multichannel audio
     mask: null,                 // SpectralMask instance
     hpsGrids: null,             // {gridH, gridP, nFrames, nBins, minDb, maxDb}
+    selection: {
+      active: false,
+      dragging: false,
+      start: 0,
+      end: 1,
+      low: 200,
+      high: 4000
+    },
+    annotations: {
+      trackKey: null,
+      nextId: 1,
+      items: []
+    },
     // Brush tool state
     brushActive: false,
     brushSize: 20,
@@ -98,6 +112,8 @@
   const waveform = new window.Waveform($('waveformCanvas'));
   const barsCanvas = $('barsCanvas');
   const barsCtx = barsCanvas.getContext('2d');
+  const stereoScopeCanvas = $('stereoScopeCanvas');
+  const stereoScopeCtx = stereoScopeCanvas ? stereoScopeCanvas.getContext('2d') : null;
 
   const waterfall = new window.Visualizations.Waterfall();
 
@@ -109,9 +125,101 @@
       mode === 'waterfall';
   }
 
+  function currentChannels(buf = state.buffer) {
+    if (!buf) return [];
+    const out = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c));
+    return out;
+  }
+
+  function copyChannels(buf = state.buffer) {
+    return currentChannels(buf).map((ch) => new Float32Array(ch));
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function trackAnnotationKey(buf, displayName) {
+    if (!buf) return null;
+    const name = (displayName || $('filename').textContent || '').trim();
+    return [
+      'annotations',
+      name || 'untitled',
+      buf.sampleRate,
+      buf.numberOfChannels,
+      buf.length,
+      Math.round(buf.duration * 1000)
+    ].join(':');
+  }
+
+  function syncSelectionInputs() {
+    $('selStart').value = state.selection.start.toFixed(3);
+    $('selEnd').value = state.selection.end.toFixed(3);
+    $('selLow').value = String(Math.round(state.selection.low));
+    $('selHigh').value = String(Math.round(state.selection.high));
+  }
+
+  function normalizeSelection(partial) {
+    const duration = state.buffer ? state.buffer.duration : 1;
+    const nyq = state.buffer ? state.buffer.sampleRate / 2 : 22050;
+    const start = clamp(Math.min(partial.start, partial.end), 0, duration);
+    const end = clamp(Math.max(partial.start, partial.end), 0, duration);
+    const low = clamp(Math.min(partial.low, partial.high), 0, nyq);
+    const high = clamp(Math.max(partial.low, partial.high), 0, nyq);
+    return { start, end, low, high };
+  }
+
+  function setSelection(partial, activate = true) {
+    const next = normalizeSelection({
+      start: partial.start != null ? partial.start : state.selection.start,
+      end: partial.end != null ? partial.end : state.selection.end,
+      low: partial.low != null ? partial.low : state.selection.low,
+      high: partial.high != null ? partial.high : state.selection.high
+    });
+    state.selection.start = next.start;
+    state.selection.end = next.end;
+    state.selection.low = next.low;
+    state.selection.high = next.high;
+    state.selection.active = activate && next.end > next.start;
+    syncSelectionInputs();
+    renderer.renderOverlay();
+  }
+
+  function clearSelection() {
+    state.selection.active = false;
+    state.selection.dragging = false;
+    renderer.renderOverlay();
+  }
+
+  function selectionToMaskBox() {
+    if (!state.mask || !state.buffer || !state.selection.active) return null;
+    const sr = state.buffer.sampleRate;
+    const nFrames = state.mask.nFrames;
+    const nBins = state.mask.nBins;
+    const f0 = clamp(Math.floor((state.selection.start / state.buffer.duration) * (nFrames - 1)), 0, nFrames - 1);
+    const f1 = clamp(Math.ceil((state.selection.end / state.buffer.duration) * (nFrames - 1)), 0, nFrames - 1);
+    const b0 = clamp(Math.floor((state.selection.low / (sr / 2)) * (nBins - 1)), 0, nBins - 1);
+    const b1 = clamp(Math.ceil((state.selection.high / (sr / 2)) * (nBins - 1)), 0, nBins - 1);
+    return { f0: Math.min(f0, f1), f1: Math.max(f0, f1), b0: Math.min(b0, b1), b1: Math.max(b0, b1) };
+  }
+
+  function annotationTimeToX(timeSec, width) {
+    if (!state.buffer || !state.buffer.duration) return 0;
+    const t0 = renderer.tPan * state.buffer.duration;
+    const t1 = Math.min(state.buffer.duration, (renderer.tPan + 1 / renderer.tZoom) * state.buffer.duration);
+    if (t1 <= t0) return 0;
+    return ((timeSec - t0) / (t1 - t0)) * width;
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  }
+
   // Hover readout — time / frequency / dB / nearest note.
   const hoverEl = $('hoverReadout');
   const NOTE_NAMES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+  const SQRT1_2 = Math.SQRT1_2;
   function hzToNote(hz) {
     if (!hz || hz < 10) return '';
     // MIDI semitone number relative to A4 = 69.
@@ -142,6 +250,19 @@
   // Brush cursor ring so the user can see the tool is armed and where the
   // stroke will land before committing. Stored in canvas-internal pixels.
   state.brushCursor = { x: 0, y: 0, visible: false };
+
+  function selectionFromPixels(x0, y0, x1, y1) {
+    if (!state.buffer || !modeUsesFrequencyAxis('spectrogram')) return null;
+    const w = overlayCanvas.width;
+    const h = overlayCanvas.height;
+    const t0 = renderer.tPan;
+    const t1 = Math.min(1, renderer.tPan + 1 / renderer.tZoom);
+    const start = (t0 + (Math.min(x0, x1) / w) * (t1 - t0)) * state.buffer.duration;
+    const end = (t0 + (Math.max(x0, x1) / w) * (t1 - t0)) * state.buffer.duration;
+    const low = renderer.yToFreq(Math.max(y0, y1), h);
+    const high = renderer.yToFreq(Math.min(y0, y1), h);
+    return normalizeSelection({ start, end, low, high });
+  }
 
   overlayCanvas.addEventListener('mousemove', (e) => {
     const r = overlayCanvas.getBoundingClientRect();
@@ -180,6 +301,18 @@
       state.brushCursor.y = yPx;
       state.brushCursor.visible = true;
       drawBrushCursor();
+    }
+    if (state.selection.dragging && state.selection.dragOrigin) {
+      const box = selectionFromPixels(
+        state.selection.dragOrigin.x,
+        state.selection.dragOrigin.y,
+        xPx,
+        yPx
+      );
+      if (box) {
+        setSelection(box, true);
+      }
+      return;
     }
     if (state.brushActive && state.brushDown && (e.buttons & 1)) {
       paintBrushAt(xPx, yPx);
@@ -230,6 +363,14 @@
     const r = overlayCanvas.getBoundingClientRect();
     const xPx = (e.clientX - r.left) * (overlayCanvas.width / r.width);
     const yPx = (e.clientY - r.top) * (overlayCanvas.height / r.height);
+    if (e.shiftKey && state.buffer && state.track && modeUsesFrequencyAxis()) {
+      state.selection.dragging = true;
+      state.selection.dragOrigin = { x: xPx, y: yPx };
+      const box = selectionFromPixels(xPx, yPx, xPx + 1, yPx + 1);
+      if (box) setSelection(box, true);
+      status('Drawing precise selection…', 'ok');
+      return;
+    }
     if (state.brushActive) {
       if (!state.mask) {
         // Mask hasn't been initialised yet — the STFT hasn't finished. Try
@@ -267,6 +408,16 @@
   window.addEventListener('mouseup', () => {
     state.brushDown = false;
     state.brushLastPaint = null; // end current stroke
+    if (state.selection.dragging) {
+      state.selection.dragging = false;
+      state.selection.dragOrigin = null;
+      if (state.selection.active) {
+        status(
+          `Selection ${formatTime(state.selection.start)} → ${formatTime(state.selection.end)} · ${Math.round(state.selection.low)}-${Math.round(state.selection.high)} Hz`,
+          'ok'
+        );
+      }
+    }
   });
 
   // Double-click on spectrogram to flood-fill auto-select a region (when
@@ -395,11 +546,83 @@
     const r = barsCanvas.getBoundingClientRect();
     barsCanvas.width = Math.max(1, r.width * (window.devicePixelRatio || 1));
     barsCanvas.height = Math.max(1, r.height * (window.devicePixelRatio || 1));
+    if (stereoScopeCanvas) {
+      const sr = stereoScopeCanvas.getBoundingClientRect();
+      stereoScopeCanvas.width = Math.max(1, sr.width * (window.devicePixelRatio || 1));
+      stereoScopeCanvas.height = Math.max(1, sr.height * (window.devicePixelRatio || 1));
+    }
     renderCurrentMode();
     waveform.render();
     drawLegend();
+    drawStereoScope();
   }
   window.addEventListener('resize', resizeAll);
+
+  function saveAnnotations() {
+    if (!state.annotations.trackKey) return;
+    try {
+      localStorage.setItem(state.annotations.trackKey, JSON.stringify({
+        nextId: state.annotations.nextId,
+        items: state.annotations.items
+      }));
+      $('annoStatus').textContent = `${state.annotations.items.length} annotation${state.annotations.items.length === 1 ? '' : 's'} saved for this track.`;
+    } catch (_) {
+      $('annoStatus').textContent = 'Annotation save failed.';
+    }
+  }
+
+  function renderAnnotationList() {
+    const host = $('annotationList');
+    const items = state.annotations.items;
+    if (!items.length) {
+      host.innerHTML = '<div class="small" style="padding:8px 10px;">No annotations yet.</div>';
+      renderer.renderOverlay();
+      return;
+    }
+    host.innerHTML = items.map((item) => {
+      const meta = item.type === 'marker'
+        ? `${formatTime(item.time)}`
+        : `${formatTime(item.start)} → ${formatTime(item.end)} · ${Math.round(item.low)}-${Math.round(item.high)} Hz`;
+      return `
+        <div class="annotation-row" data-id="${item.id}">
+          <input class="annotation-label" data-k="label" value="${escapeHtml(item.label || '')}" />
+          <div class="annotation-meta">${escapeHtml(meta)}</div>
+          <div class="annotation-actions">
+            <button class="btn small" data-action="seek">Seek</button>
+            <button class="btn small ghost" data-action="delete">Delete</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    renderer.renderOverlay();
+  }
+
+  function loadAnnotations(trackKey) {
+    state.annotations.trackKey = trackKey;
+    state.annotations.nextId = 1;
+    state.annotations.items = [];
+    if (!trackKey) {
+      renderAnnotationList();
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(trackKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        state.annotations.nextId = Math.max(1, parsed.nextId || 1);
+        state.annotations.items = Array.isArray(parsed.items) ? parsed.items : [];
+      }
+    } catch (_) {}
+    renderAnnotationList();
+  }
+
+  function addAnnotation(item) {
+    const id = state.annotations.nextId++;
+    state.annotations.items.push({ id, ...item });
+    saveAnnotations();
+    renderAnnotationList();
+    return id;
+  }
 
   // ---------- File loading ----------
   async function handleFile(file) {
@@ -425,6 +648,7 @@
   async function onBufferLoaded(buf, displayName) {
     state.buffer = buf;
     state.originalBuffer = buf;
+    state.originalChannels = copyChannels(buf);
     $('filename').textContent = displayName || '(in-memory audio)';
     $('waveInfo').textContent = `${buf.numberOfChannels}ch • ${buf.sampleRate} Hz • ${buf.duration.toFixed(2)}s`;
     applyChannelMode();
@@ -444,6 +668,13 @@
       maxInput.value = String(state.maxFreq);
     }
     applyDisplayParams();
+    setSelection({
+      start: 0,
+      end: Math.min(1, buf.duration),
+      low: Math.min(200, nyq),
+      high: Math.min(4000, nyq)
+    }, false);
+    loadAnnotations(trackAnnotationKey(buf, displayName));
     audio.setBandLimits(state.minFreq, state.maxFreq);
     hideEmptyState();
     await computeTrack();
@@ -605,26 +836,91 @@
     return result;
   }
 
+  function drawSelectionOverlay(ctx, W, H) {
+    if (!state.selection.active || !state.buffer || !modeUsesFrequencyAxis()) return;
+    const x0 = annotationTimeToX(state.selection.start, W);
+    const x1 = annotationTimeToX(state.selection.end, W);
+    const y0 = renderer.freqToY(state.selection.high, H);
+    const y1 = renderer.freqToY(state.selection.low, H);
+    const left = Math.min(x0, x1);
+    const top = Math.min(y0, y1);
+    const width = Math.abs(x1 - x0);
+    const height = Math.abs(y1 - y0);
+    ctx.save();
+    ctx.fillStyle = 'rgba(79, 209, 197, 0.12)';
+    ctx.strokeStyle = 'rgba(79, 209, 197, 0.95)';
+    ctx.lineWidth = 1.5 * Math.min(window.devicePixelRatio || 1, 2);
+    ctx.fillRect(left, top, width, height);
+    ctx.strokeRect(left, top, width, height);
+    ctx.restore();
+  }
+
+  function drawAnnotationsOverlay(ctx, W, H) {
+    if (!state.annotations.items.length || !state.buffer) return;
+    const t0 = renderer.tPan * state.buffer.duration;
+    const t1 = Math.min(state.buffer.duration, (renderer.tPan + 1 / renderer.tZoom) * state.buffer.duration);
+    ctx.save();
+    ctx.font = `${10 * Math.min(window.devicePixelRatio || 1, 2)}px ui-monospace, monospace`;
+    for (const item of state.annotations.items) {
+      if (item.type === 'marker') {
+        if (item.time < t0 || item.time > t1) continue;
+        const x = annotationTimeToX(item.time, W);
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.95)';
+        ctx.lineWidth = 1.5 * Math.min(window.devicePixelRatio || 1, 2);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.95)';
+        ctx.fillText(item.label || 'Marker', Math.min(W - 96, x + 4), 14);
+      } else if (item.type === 'region') {
+        if (item.end < t0 || item.start > t1) continue;
+        const x0 = annotationTimeToX(item.start, W);
+        const x1 = annotationTimeToX(item.end, W);
+        let y0 = 0;
+        let y1 = H;
+        if (modeUsesFrequencyAxis()) {
+          y0 = renderer.freqToY(item.high, H);
+          y1 = renderer.freqToY(item.low, H);
+        }
+        const left = Math.min(x0, x1);
+        const top = Math.min(y0, y1);
+        const width = Math.abs(x1 - x0);
+        const height = Math.abs(y1 - y0);
+        ctx.fillStyle = 'rgba(139, 92, 246, 0.12)';
+        ctx.strokeStyle = 'rgba(139, 92, 246, 0.9)';
+        ctx.lineWidth = 1;
+        ctx.fillRect(left, top, width, height);
+        ctx.strokeRect(left, top, width, height);
+        ctx.fillStyle = 'rgba(206, 180, 255, 0.95)';
+        ctx.fillText(item.label || 'Region', Math.min(W - 110, left + 4), Math.max(12, top + 12));
+      }
+    }
+    ctx.restore();
+  }
+
   // Renderer calls this hook at the end of every renderOverlay() — including
   // the per-frame cursor updates during playback — so the EQ curve (drawn on
   // the overlay canvas) is not wiped every animation frame.
   renderer.onOverlayDraw = function (ctx, W, H) {
-    if (!modeUsesFrequencyAxis(state.mode) || !state.eq || !state.eqShowCurve || state.eq.bypass) return;
-    // Reuse the same axis mapping as drawEqCurveOverlay below.
-    const fmin = Math.max(1, renderer.minFreq);
-    const fmax = Math.max(fmin + 1, Math.min(renderer.sampleRate / 2, renderer.maxFreq));
-    const freqToX = (hz) => {
-      let frac;
-      if (renderer.freqScale === 'log') frac = Math.log(Math.max(fmin, Math.min(fmax, hz)) / fmin) / Math.log(fmax / fmin);
-      else frac = (hz - fmin) / (fmax - fmin);
-      return frac * W;
-    };
-    const xToFreq = (x) => {
-      const frac = x / W;
-      if (renderer.freqScale === 'log') return fmin * Math.pow(fmax / fmin, frac);
-      return fmin + (fmax - fmin) * frac;
-    };
-    window.drawEqCurve(ctx, W, H, state.eq, { freqToX, xToFreq, minDb: -24, maxDb: 24 });
+    if (modeUsesFrequencyAxis(state.mode) && state.eq && state.eqShowCurve && !state.eq.bypass) {
+      const fmin = Math.max(1, renderer.minFreq);
+      const fmax = Math.max(fmin + 1, Math.min(renderer.sampleRate / 2, renderer.maxFreq));
+      const freqToX = (hz) => {
+        let frac;
+        if (renderer.freqScale === 'log') frac = Math.log(Math.max(fmin, Math.min(fmax, hz)) / fmin) / Math.log(fmax / fmin);
+        else frac = (hz - fmin) / (fmax - fmin);
+        return frac * W;
+      };
+      const xToFreq = (x) => {
+        const frac = x / W;
+        if (renderer.freqScale === 'log') return fmin * Math.pow(fmax / fmin, frac);
+        return fmin + (fmax - fmin) * frac;
+      };
+      window.drawEqCurve(ctx, W, H, state.eq, { freqToX, xToFreq, minDb: -24, maxDb: 24 });
+    }
+    drawAnnotationsOverlay(ctx, W, H);
+    drawSelectionOverlay(ctx, W, H);
   };
 
   function _renderCurrentModeInner() {
@@ -1121,6 +1417,184 @@
     if (state.buffer) computeTrack();
   }
 
+  // Precise spectral selection.
+  ['selStart', 'selEnd', 'selLow', 'selHigh'].forEach((id) => {
+    $(id).addEventListener('change', () => {
+      setSelection({
+        start: parseFloat($('selStart').value) || 0,
+        end: parseFloat($('selEnd').value) || 0,
+        low: parseFloat($('selLow').value) || 0,
+        high: parseFloat($('selHigh').value) || 0
+      }, true);
+    });
+  });
+  $('selFromLoop').addEventListener('click', () => {
+    if (!state.loop) return;
+    setSelection({
+      start: state.loop.start,
+      end: state.loop.end
+    }, true);
+  });
+  $('selFromView').addEventListener('click', () => {
+    if (!state.buffer) return;
+    const start = renderer.tPan * state.buffer.duration;
+    const end = Math.min(state.buffer.duration, (renderer.tPan + 1 / renderer.tZoom) * state.buffer.duration);
+    setSelection({
+      start,
+      end,
+      low: state.minFreq,
+      high: state.maxFreq
+    }, true);
+  });
+  $('selClear').addEventListener('click', () => {
+    clearSelection();
+    status('Selection cleared.');
+  });
+  $('selLoop').addEventListener('click', () => {
+    if (!state.selection.active || !state.buffer) return;
+    state.loop = { start: state.selection.start, end: state.selection.end };
+    $('loopChk').checked = true;
+    waveform.setLoop(state.loop);
+    renderer.setLoop(state.loop);
+    audio.seek(state.selection.start);
+    status(`Loop ${formatTime(state.loop.start)} → ${formatTime(state.loop.end)}`, 'ok');
+  });
+  $('selApply').addEventListener('click', () => {
+    if (!state.track || !state.mask) {
+      status('Selection requires a finished spectrogram analysis.', 'warn');
+      return;
+    }
+    if (!state.selection.active) {
+      status('Draw or enter a selection first.', 'warn');
+      return;
+    }
+    const box = selectionToMaskBox();
+    if (!box) return;
+    for (let f = box.f0; f <= box.f1; f++) {
+      const off = f * state.mask.nBins;
+      let preserve = null;
+      if (state.brushMode === 'harmonic-preserve' && state.track && state.track.rawMags) {
+        const peaks = window.SpectralMask.findPeaks(state.track.rawMags[Math.min(f, state.track.rawMags.length - 1)] || [], 0.15);
+        preserve = new Uint8Array(state.mask.nBins);
+        for (const peak of peaks) {
+          for (let d = -3; d <= 3; d++) {
+            const idx = peak + d;
+            if (idx >= 0 && idx < preserve.length) preserve[idx] = 1;
+          }
+        }
+      }
+      for (let b = box.b0; b <= box.b1; b++) {
+        const idx = off + b;
+        switch (state.brushMode) {
+          case 'amplify':
+            state.mask.data[idx] = Math.max(state.mask.data[idx], state.brushGain);
+            break;
+          case 'smooth':
+            state.mask.smooth[idx] = 1;
+            break;
+          case 'erase':
+            state.mask.data[idx] = 1;
+            state.mask.smooth[idx] = 0;
+            break;
+          case 'harmonic-preserve':
+            if (!preserve || !preserve[b]) state.mask.data[idx] *= Math.min(1, state.brushGain);
+            break;
+          default:
+            state.mask.data[idx] *= Math.min(1, state.brushGain);
+            break;
+        }
+      }
+    }
+    state.mask.dirty = true;
+    renderCurrentMode();
+    status('Selection box painted into the spectral mask.', 'ok');
+  });
+
+  // Annotation controls.
+  $('annoAddMarker').addEventListener('click', () => {
+    if (!state.buffer) return;
+    addAnnotation({
+      type: 'marker',
+      time: audio.getCurrentTime(),
+      label: `Marker ${state.annotations.nextId}`
+    });
+  });
+  $('annoAddRegion').addEventListener('click', () => {
+    if (!state.buffer) return;
+    if (!state.selection.active) {
+      status('Create a precise selection first, then add a region.', 'warn');
+      return;
+    }
+    addAnnotation({
+      type: 'region',
+      start: state.selection.start,
+      end: state.selection.end,
+      low: state.selection.low,
+      high: state.selection.high,
+      label: `Region ${state.annotations.nextId}`
+    });
+  });
+  $('annotationList').addEventListener('input', (e) => {
+    const row = e.target.closest('.annotation-row');
+    if (!row) return;
+    const id = parseInt(row.dataset.id, 10);
+    const item = state.annotations.items.find((x) => x.id === id);
+    if (!item) return;
+    if (e.target.matches('[data-k="label"]')) {
+      item.label = e.target.value.trim();
+      saveAnnotations();
+      renderer.renderOverlay();
+    }
+  });
+  $('annotationList').addEventListener('click', (e) => {
+    const row = e.target.closest('.annotation-row');
+    if (!row) return;
+    const id = parseInt(row.dataset.id, 10);
+    const item = state.annotations.items.find((x) => x.id === id);
+    if (!item) return;
+    const action = e.target.dataset.action;
+    if (action === 'seek') {
+      audio.seek(item.type === 'marker' ? item.time : item.start);
+      if (item.type === 'region') {
+        setSelection(item, true);
+      }
+    } else if (action === 'delete') {
+      state.annotations.items = state.annotations.items.filter((x) => x.id !== id);
+      saveAnnotations();
+      renderAnnotationList();
+    }
+  });
+  $('annoExport').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({
+      trackKey: state.annotations.trackKey,
+      items: state.annotations.items
+    }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'annotations.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  });
+  $('annoImportBtn').addEventListener('click', () => $('annoImport').click());
+  $('annoImport').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const items = Array.isArray(parsed.items) ? parsed.items : [];
+      state.annotations.items = items.map((item, idx) => ({ id: idx + 1, ...item }));
+      state.annotations.nextId = state.annotations.items.length + 1;
+      saveAnnotations();
+      renderAnnotationList();
+      $('annoStatus').textContent = `Imported ${items.length} annotation${items.length === 1 ? '' : 's'}.`;
+    } catch (err) {
+      showError('Annotation import failed: ' + (err.message || err));
+    } finally {
+      e.target.value = '';
+    }
+  });
+
   // Waveform seek hook.
   waveform.onSeek = (pct) => {
     if (!state.buffer) return;
@@ -1383,7 +1857,6 @@
     audio.replaceBuffer(state.originalBuffer, true);
     state.buffer = state.originalBuffer;
     applyChannelMode();
-    state.monoSamples = new Float32Array(state.originalSamples);
     waveform.computePeaks(state.monoSamples, 2000);
     waveform.render();
     state.mask = null;
@@ -1399,24 +1872,24 @@
       status('Resynthesizing edited audio (worker)…');
       const w = new Worker('js/workers/analysis-worker.js');
       const hop = state.track.hop;
-      const samples = new Float32Array(state.monoSamples);
+      const channels = copyChannels(state.buffer);
       const mask = new Float32Array(state.mask.data);
       const smoothMask = new Float32Array(state.mask.smooth);
       w.postMessage({
         cmd: 'render-masked',
-        samples,
+        channels,
         sampleRate: state.buffer.sampleRate,
         fftSize: state.fftSize,
         hop,
         windowName: state.windowFn,
         mask,
         smoothMask,
-      }, [samples.buffer, mask.buffer, smoothMask.buffer]);
+      }, [...channels.map((ch) => ch.buffer), mask.buffer, smoothMask.buffer]);
       w.onmessage = (e) => {
         const m = e.data;
         if (m.type === 'progress') status(`Rendering (${m.stage})… ${(m.p * 100).toFixed(0)}%`);
         else if (m.type === 'render-done') {
-          const newBuf = audio.samplesToBuffer(m.rendered, m.sampleRate);
+          const newBuf = audio.samplesToBuffer(m.renderedChannels || m.rendered, m.sampleRate);
           audio.replaceBuffer(newBuf, true);
           state.buffer = newBuf;
           applyChannelMode();
@@ -1440,15 +1913,18 @@
     status('Analyzing HPS (worker)…');
     const w = new Worker('js/workers/analysis-worker.js');
     const hop = state.track ? state.track.hop : Math.max(1, Math.round(state.fftSize * (1 - state.overlap)));
-    const samples = new Float32Array(state.monoSamples);
+    const analysisSamples = new Float32Array(state.monoSamples);
+    const channels = copyChannels(state.buffer);
     const kernel = +$('hpsKernel').value;
     w.postMessage({
       cmd: 'hps',
-      samples, sampleRate: state.buffer.sampleRate,
+      analysisSamples,
+      channels,
+      sampleRate: state.buffer.sampleRate,
       fftSize: state.fftSize, hop, windowName: state.windowFn,
       kernelH: kernel, kernelP: kernel,
       render: renderKind || null
-    }, [samples.buffer]);
+    }, [analysisSamples.buffer, ...channels.map((ch) => ch.buffer)]);
     w.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'progress') status(`HPS (${m.stage})… ${(m.p * 100).toFixed(0)}%`);
@@ -1458,8 +1934,8 @@
           nFrames: m.nFrames, nBins: m.nBins,
           minDb: m.minDb, maxDb: m.maxDb
         };
-        if (m.rendered) {
-          const newBuf = audio.samplesToBuffer(m.rendered, m.renderedSampleRate);
+        if (m.rendered || m.renderedChannels) {
+          const newBuf = audio.samplesToBuffer(m.renderedChannels || m.rendered, m.renderedSampleRate);
           audio.replaceBuffer(newBuf, true);
           state.buffer = newBuf;
           applyChannelMode();
@@ -1509,7 +1985,6 @@
       audio.replaceBuffer(state.originalBuffer, true);
       state.buffer = state.originalBuffer;
       applyChannelMode();
-      state.monoSamples = new Float32Array(state.originalSamples);
       waveform.computePeaks(state.monoSamples, 2000);
     }
 
@@ -1586,6 +2061,110 @@
   }
   $('resetBtn').addEventListener('click', resetConfigToDefaults);
 
+  function channelPeakDb(samples) {
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const v = Math.abs(samples[i]);
+      if (v > peak) peak = v;
+    }
+    return 20 * Math.log10(Math.max(peak, 1e-12));
+  }
+
+  function rms(samples) {
+    if (!samples || !samples.length) return 0;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    return Math.sqrt(sum / samples.length);
+  }
+
+  function estimateStereoDelay(L, R, sampleRate, maxMs = 25) {
+    const maxLag = Math.max(1, Math.round((maxMs / 1000) * sampleRate));
+    const span = Math.min(L.length, R.length, Math.max(sampleRate, maxLag * 8));
+    let bestLag = 0;
+    let bestScore = -Infinity;
+    for (let lag = -maxLag; lag <= maxLag; lag++) {
+      let sum = 0;
+      let count = 0;
+      const startL = lag < 0 ? -lag : 0;
+      const startR = lag > 0 ? lag : 0;
+      const n = Math.min(span - startL, span - startR);
+      for (let i = 0; i < n; i++) {
+        sum += L[startL + i] * R[startR + i];
+        count++;
+      }
+      if (count && sum > bestScore) {
+        bestScore = sum;
+        bestLag = lag;
+      }
+    }
+    return (bestLag / sampleRate) * 1000;
+  }
+
+  function currentStereoWindow(durationSec = 0.08) {
+    if (!state.buffer || state.buffer.numberOfChannels < 2) return null;
+    const L = state.buffer.getChannelData(0);
+    const R = state.buffer.getChannelData(1);
+    const center = Math.floor(audio.getCurrentTime() * state.buffer.sampleRate);
+    const half = Math.max(256, Math.floor(durationSec * state.buffer.sampleRate * 0.5));
+    const start = clamp(center - half, 0, Math.max(0, L.length - 1));
+    const end = clamp(center + half, start + 1, L.length);
+    return {
+      L: L.subarray(start, end),
+      R: R.subarray(start, end)
+    };
+  }
+
+  function classifyStereo(corr, widthPct) {
+    if (corr > 0.95 && widthPct < 8) return 'Nearly mono';
+    if (corr < 0) return 'Out of phase';
+    if (widthPct > 30) return 'Wide stereo';
+    return 'Stereo';
+  }
+
+  function drawStereoScope() {
+    if (!stereoScopeCanvas || !stereoScopeCtx) return;
+    const ctx = stereoScopeCtx;
+    const W = stereoScopeCanvas.width;
+    const H = stereoScopeCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#05070a';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.5, 0); ctx.lineTo(W * 0.5, H);
+    ctx.moveTo(0, H * 0.5); ctx.lineTo(W, H * 0.5);
+    ctx.stroke();
+    const win = currentStereoWindow();
+    if (!win) {
+      $('stMode').textContent = 'mono';
+      $('stImbalance').textContent = '—';
+      $('stMonoSafe').textContent = '—';
+      return;
+    }
+    const { L, R } = win;
+    let corr = window.Metering.stereoCorrelation(L, R);
+    const midSide = window.Metering.midSideEnergy(L, R);
+    const leftRms = rms(L);
+    const rightRms = rms(R);
+    const imbalance = 20 * Math.log10(Math.max(leftRms, 1e-12) / Math.max(rightRms, 1e-12));
+    const monoSafe = corr > -0.15 ? 'Yes' : 'Risk';
+    $('stMode').textContent = classifyStereo(corr, midSide.widthPct);
+    $('stImbalance').textContent = `${imbalance >= 0 ? '+' : ''}${imbalance.toFixed(1)} dB`;
+    $('stMonoSafe').textContent = monoSafe;
+    ctx.strokeStyle = 'rgba(79, 209, 197, 0.35)';
+    ctx.lineWidth = 1 * Math.min(window.devicePixelRatio || 1, 2);
+    ctx.beginPath();
+    const n = Math.min(L.length, 800);
+    for (let i = 0; i < n; i++) {
+      const x = W * 0.5 + (L[i] - R[i]) * SQRT1_2 * W * 0.42;
+      const y = H * 0.5 - (L[i] + R[i]) * SQRT1_2 * H * 0.42;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
   // ---------- Pro features wiring ----------
   //
   // Loudness / peak / key+BPM analysis runs on demand ("Analyze track" button),
@@ -1630,6 +2209,8 @@
       $('mWidth').textContent = r.midSide
         ? r.midSide.widthPct.toFixed(0) + '%'
         : '—';
+      $('mDelay').textContent = r.stereoDelayMs != null ? `${r.stereoDelayMs >= 0 ? '+' : ''}${r.stereoDelayMs.toFixed(2)} ms` : '—';
+      $('mBalance').textContent = r.stereoBalanceDb != null ? `${r.stereoBalanceDb >= 0 ? '+' : ''}${r.stereoBalanceDb.toFixed(1)} dB` : '—';
       $('mNoise').textContent = formatDb(r.noiseFloorDb, 'dBFS');
     }
     if (kt) {
@@ -1688,6 +2269,10 @@
       const nC = state.buffer.numberOfChannels;
       for (let c = 0; c < nC; c++) chans.push(state.buffer.getChannelData(c));
       const report = window.Metering.analyzeBuffer(chans, state.buffer.sampleRate);
+      if (chans.length >= 2) {
+        report.stereoDelayMs = estimateStereoDelay(chans[0], chans[1], state.buffer.sampleRate);
+        report.stereoBalanceDb = 20 * Math.log10(Math.max(rms(chans[0]), 1e-12) / Math.max(rms(chans[1]), 1e-12));
+      }
       const keyTempo = window.KeyTempo.analyzeTrack(
         state.track.rawMags,
         state.buffer.sampleRate,
@@ -1813,7 +2398,10 @@
     }
   }
   function updateLiveMeters() {
-    if (!audio.analyser || !audio.playing) return;
+    if (!audio.analyser || !audio.playing) {
+      drawStereoScope();
+      return;
+    }
     ensureRunningLufs();
     const n = audio.analyser.fftSize;
     if (!state.pro.timeDomain || state.pro.timeDomain.length !== n) {
@@ -1832,6 +2420,17 @@
     $('mLiveM').textContent = formatLufs(m);
     $('mLiveS').textContent = formatLufs(s);
     $('mLivePk').textContent = formatDb(p, 'dBFS');
+    const win = currentStereoWindow();
+    if (win) {
+      $('mLiveL').textContent = formatDb(channelPeakDb(win.L), 'dBFS');
+      $('mLiveR').textContent = formatDb(channelPeakDb(win.R), 'dBFS');
+      $('mLiveCorr').textContent = window.Metering.stereoCorrelation(win.L, win.R).toFixed(2);
+    } else {
+      $('mLiveL').textContent = '—';
+      $('mLiveR').textContent = '—';
+      $('mLiveCorr').textContent = 'mono';
+    }
+    drawStereoScope();
   }
   // Hook into the existing tick loop by extending it — call on every RAF.
   (function attachLiveMeters() {
@@ -1857,7 +2456,11 @@
       $('mLiveM').textContent = '—';
       $('mLiveS').textContent = '—';
       $('mLivePk').textContent = '—';
+      $('mLiveL').textContent = '—';
+      $('mLiveR').textContent = '—';
+      $('mLiveCorr').textContent = '—';
       if (state.pro.running) state.pro.running.reset();
+      drawStereoScope();
     }
   })(audio.onPlayStateChange);
 

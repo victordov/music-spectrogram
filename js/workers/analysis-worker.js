@@ -36,6 +36,50 @@ function packMags(mags, fftSize, minDb, maxDb) {
   return grid;
 }
 
+function smoothComplexStft(stft, smoothMask, fftSize) {
+  if (!smoothMask) return;
+  const nBinsOne = fftSize / 2 + 1;
+  const K = 3; // half-window for smoothing (± bins)
+  for (let f = 0; f < stft.nFrames; f++) {
+    const r = stft.re[f], im = stft.im[f];
+    const rOut = new Float32Array(r);
+    const iOut = new Float32Array(im);
+    const base = f * nBinsOne;
+    for (let k = 0; k < nBinsOne; k++) {
+      const s = smoothMask[base + k];
+      if (s <= 0) continue;
+      let sumR = 0, sumI = 0, w = 0;
+      for (let d = -K; d <= K; d++) {
+        const kk = k + d;
+        if (kk < 0 || kk >= nBinsOne) continue;
+        const ww = 1 - Math.abs(d) / (K + 1);
+        sumR += r[kk] * ww;
+        sumI += im[kk] * ww;
+        w += ww;
+      }
+      const sr = sumR / (w || 1);
+      const si = sumI / (w || 1);
+      rOut[k] = r[k] * (1 - s) + sr * s;
+      iOut[k] = im[k] * (1 - s) + si * s;
+    }
+    stft.re[f] = rOut;
+    stft.im[f] = iOut;
+  }
+}
+
+function renderMaskedSamples(samples, sampleRate, fftSize, hop, windowName, maskFrames, smoothMask, progressStagePrefix) {
+  const stft = self.Analyzer.computeSTFTComplex(samples, sampleRate, {
+    fftSize, hop, windowName,
+    onProgress: (p) => self.postMessage({ type: 'progress', stage: progressStagePrefix || 'stft', p })
+  });
+  smoothComplexStft(stft, smoothMask, fftSize);
+  self.Analyzer.applyMaskComplex(stft.re, stft.im, maskFrames);
+  return self.Analyzer.istft(stft.re, stft.im, {
+    fftSize, hop, windowName,
+    onProgress: (p) => self.postMessage({ type: 'progress', stage: 'istft', p })
+  });
+}
+
 self.onmessage = (ev) => {
   const msg = ev.data;
   try {
@@ -92,8 +136,20 @@ self.onmessage = (ev) => {
 
     else if (msg.cmd === 'hps') {
       // Compute complex STFT, HPS masks, and optionally render the selected component.
-      const { samples, sampleRate, fftSize, hop, windowName, kernelH, kernelP, render } = msg;
-      const { stft, mags } = stftBundle(samples, sampleRate, fftSize, hop, windowName, 'stft');
+      const {
+        samples,
+        analysisSamples,
+        channels,
+        sampleRate,
+        fftSize,
+        hop,
+        windowName,
+        kernelH,
+        kernelP,
+        render
+      } = msg;
+      const basis = analysisSamples || samples;
+      const { stft, mags } = stftBundle(basis, sampleRate, fftSize, hop, windowName, 'stft');
       self.postMessage({ type: 'progress', stage: 'hps-masks', p: 0 });
       const { Mh, Mp } = self.Analyzer.hpsMasks(mags, {
         kernelH, kernelP,
@@ -114,80 +170,79 @@ self.onmessage = (ev) => {
         }
       }
       let rendered = null;
+      let renderedChannels = null;
       if (render === 'harmonic' || render === 'percussive') {
         const mask = render === 'harmonic' ? Mh : Mp;
-        const reC = stft.re.map(r => new Float32Array(r));
-        const imC = stft.im.map(i => new Float32Array(i));
-        self.Analyzer.applyMaskComplex(reC, imC, mask);
-        rendered = self.Analyzer.istft(reC, imC, {
-          fftSize, hop, windowName,
-          onProgress: (p) => self.postMessage({ type: 'progress', stage: 'istft', p })
-        });
+        if (channels && channels.length) {
+          renderedChannels = channels.map((ch, idx) =>
+            renderMaskedSamples(
+              ch,
+              sampleRate,
+              fftSize,
+              hop,
+              windowName,
+              mask,
+              null,
+              idx === 0 ? 'stft' : 'stft-ch'
+            )
+          );
+        } else {
+          const reC = stft.re.map(r => new Float32Array(r));
+          const imC = stft.im.map(i => new Float32Array(i));
+          self.Analyzer.applyMaskComplex(reC, imC, mask);
+          rendered = self.Analyzer.istft(reC, imC, {
+            fftSize, hop, windowName,
+            onProgress: (p) => self.postMessage({ type: 'progress', stage: 'istft', p })
+          });
+        }
       }
       const transfer = [gridH.buffer, gridP.buffer];
       if (rendered) transfer.push(rendered.buffer);
+      if (renderedChannels) {
+        for (const ch of renderedChannels) transfer.push(ch.buffer);
+      }
       self.postMessage({
         type: 'hps-done',
         gridH, gridP,
         nFrames: stft.nFrames, nBins: fftSize / 2, fftSize, hop, sampleRate,
         minDb, maxDb,
-        rendered, renderedSampleRate: sampleRate
+        rendered,
+        renderedChannels,
+        renderedSampleRate: sampleRate
       }, transfer);
     }
 
     else if (msg.cmd === 'render-masked') {
       // Apply arbitrary real-valued gain mask + optional smoothing mask to a
       // complex STFT, then ISTFT back to samples.
-      const { samples, sampleRate, fftSize, hop, windowName, mask, smoothMask } = msg;
-      const stft = self.Analyzer.computeSTFTComplex(samples, sampleRate, {
-        fftSize, hop, windowName,
-        onProgress: (p) => self.postMessage({ type: 'progress', stage: 'stft', p })
-      });
+      const { samples, channels, sampleRate, fftSize, hop, windowName, mask, smoothMask } = msg;
       const nBinsOne = fftSize / 2 + 1;
-
-      // Optional smoothing: in cells where smoothMask > 0, replace (re, im) with
-      // a weighted average of neighbouring bins (same frame). This smears
-      // narrow-band energy while preserving phase continuity reasonably well.
-      if (smoothMask) {
-        const K = 3; // half-window for smoothing (± bins)
-        for (let f = 0; f < stft.nFrames; f++) {
-          const r = stft.re[f], im = stft.im[f];
-          const rOut = new Float32Array(r);
-          const iOut = new Float32Array(im);
-          const base = f * nBinsOne;
-          for (let k = 0; k < nBinsOne; k++) {
-            const s = smoothMask[base + k];
-            if (s <= 0) continue;
-            let sumR = 0, sumI = 0, w = 0;
-            for (let d = -K; d <= K; d++) {
-              const kk = k + d;
-              if (kk < 0 || kk >= nBinsOne) continue;
-              const ww = 1 - Math.abs(d) / (K + 1);
-              sumR += r[kk] * ww;
-              sumI += im[kk] * ww;
-              w += ww;
-            }
-            const sr = sumR / (w || 1);
-            const si = sumI / (w || 1);
-            rOut[k] = r[k] * (1 - s) + sr * s;
-            iOut[k] = im[k] * (1 - s) + si * s;
-          }
-          stft.re[f] = rOut;
-          stft.im[f] = iOut;
-        }
-      }
-
-      // Apply gain mask.
-      const maskFrames = new Array(stft.nFrames);
-      for (let f = 0; f < stft.nFrames; f++) {
+      const nFrames = Math.floor(mask.length / nBinsOne);
+      const maskFrames = new Array(nFrames);
+      for (let f = 0; f < nFrames; f++) {
         maskFrames[f] = mask.subarray(f * nBinsOne, (f + 1) * nBinsOne);
       }
-      self.Analyzer.applyMaskComplex(stft.re, stft.im, maskFrames);
-      const rendered = self.Analyzer.istft(stft.re, stft.im, {
-        fftSize, hop, windowName,
-        onProgress: (p) => self.postMessage({ type: 'progress', stage: 'istft', p })
-      });
-      self.postMessage({ type: 'render-done', rendered, sampleRate }, [rendered.buffer]);
+      if (channels && channels.length) {
+        const renderedChannels = channels.map((ch, idx) =>
+          renderMaskedSamples(
+            ch,
+            sampleRate,
+            fftSize,
+            hop,
+            windowName,
+            maskFrames,
+            smoothMask,
+            idx === 0 ? 'stft' : 'stft-ch'
+          )
+        );
+        self.postMessage(
+          { type: 'render-done', renderedChannels, sampleRate },
+          renderedChannels.map((ch) => ch.buffer)
+        );
+      } else {
+        const rendered = renderMaskedSamples(samples, sampleRate, fftSize, hop, windowName, maskFrames, smoothMask, 'stft');
+        self.postMessage({ type: 'render-done', rendered, sampleRate }, [rendered.buffer]);
+      }
     }
   } catch (err) {
     self.postMessage({ type: 'error', message: String(err && err.message || err) });
