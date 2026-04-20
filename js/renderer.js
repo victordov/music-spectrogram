@@ -29,6 +29,7 @@
       this.maxDb = -10;
       this.gamma = 1;
       this.grid = true;
+      this.showFrequencyGrid = true;
       this.harmonic = false;
 
       // Full-track grid (Uint8Array packed).
@@ -301,7 +302,7 @@
       ctx.clearRect(0, 0, w, h);
       // Gridlines
       if (this.grid) {
-        this._drawGrid(ctx, w, h);
+        this._drawGrid(ctx, w, h, { showFrequencyGrid: this.showFrequencyGrid });
       }
       // Loop region
       if (this.loop && this.duration) {
@@ -328,7 +329,7 @@
         }
       }
       // Harmonic overlay
-      if (this.harmonic && this.harmonicPoints && this.harmonicPoints.length) {
+      if (this.showFrequencyGrid && this.harmonic && this.harmonicPoints && this.harmonicPoints.length) {
         ctx.strokeStyle = 'rgba(255,255,255,0.6)';
         ctx.lineWidth = 1 * this._dpr;
         const pts = this.harmonicPoints;
@@ -364,23 +365,24 @@
       return ((t / this.duration - t0) / (t1 - t0)) * w;
     }
 
-    _drawGrid(ctx, w, h) {
+    _drawGrid(ctx, w, h, { showFrequencyGrid = true } = {}) {
       ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.08)';
       ctx.lineWidth = 1;
       ctx.font = `${10 * this._dpr}px ui-monospace, monospace`;
       ctx.fillStyle = 'rgba(230,233,239,0.6)';
-      // Frequency lines
-      const lines = this.freqScale === 'log'
-        ? [50, 100, 250, 500, 1000, 2000, 5000, 10000, 20000]
-        : [1000, 2000, 5000, 10000, 15000, 20000];
-      for (const hz of lines) {
-        if (hz < this.minFreq || hz > this.maxFreq) continue;
-        const y = this.freqToY(hz, h);
-        if (y < 0 || y > h) continue;
-        ctx.beginPath();
-        ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-        ctx.fillText(hz >= 1000 ? (hz / 1000) + 'k' : String(hz), 4, y - 2);
+      if (showFrequencyGrid) {
+        const lines = this.freqScale === 'log'
+          ? [50, 100, 250, 500, 1000, 2000, 5000, 10000, 20000]
+          : [1000, 2000, 5000, 10000, 15000, 20000];
+        for (const hz of lines) {
+          if (hz < this.minFreq || hz > this.maxFreq) continue;
+          const y = this.freqToY(hz, h);
+          if (y < 0 || y > h) continue;
+          ctx.beginPath();
+          ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+          ctx.fillText(hz >= 1000 ? (hz / 1000) + 'k' : String(hz), 4, y - 2);
+        }
       }
       // Time lines (static mode)
       if (this.mode === 'static' && this.duration) {

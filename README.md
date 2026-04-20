@@ -172,6 +172,11 @@ Hamming, Blackman, Bartlett, Rectangular, Flat-Top), smoothing, min/max
 displayed frequency, channel mode (mixed/L/R/stereo), linear/log freq axis,
 eight colour maps, min/max dB, gamma, time and frequency zoom/pan.
 
+The **min/max dB** controls remap the spectrogram and every dB-backed
+alternative heatmap (*mel / cochleagram / reassigned / cepstrum / scalogram*)
+through the current display window. Views whose vertical axis is not frequency
+(*chroma*, *cepstrum*, *features*) do not draw Hz-labelled gridlines on top.
+
 The **min / max displayed frequency** controls are also a hard band-limit on
 the *audio path*: a 4th-order Linkwitz-Riley filter (cascaded highpass +
 lowpass biquads at Q = 0.707, 24 dB/oct) sits between the gain stage and the
@@ -813,8 +818,8 @@ _Expected after step J:_
 | Scrolling spectrogram | New column per hop; cursor pinned to right edge |
 | Static spectrogram | Cursor moves across; zoom/pan rescales the visible window |
 | Live bars | One bar per ~96 frequency slots; colour-mapped; peak Hz shown above |
-| Mel / chroma / cochlea / reassigned / cepstrum | Populated on tab switch; re-derived from cached STFT |
-| Scalogram | Progress bar updates; final render uses current colour map + zoom |
+| Mel / chroma / cochlea / reassigned / cepstrum | Populated on tab switch; re-derived from cached STFT; dB-backed views respect the live Min/Max dB window |
+| Scalogram | Progress bar updates; final render uses current colour map, dB window, and zoom |
 | Waterfall | Updates during playback only; older frames fade into the distance |
 | Features panel | Five overlaid traces for centroid / bandwidth / rolloff / flux / RMS |
 | Parametric EQ | Knob changes are audible within one animation frame; curve matches |
@@ -932,4 +937,3 @@ MIT © 2026 Victor Dovgan. See [`LICENSE`](LICENSE) for the full text.
 <p align="center">
   <sub>Built with zero runtime dependencies and too much coffee.</sub>
 </p>
-

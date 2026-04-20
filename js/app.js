@@ -101,6 +101,14 @@
 
   const waterfall = new window.Visualizations.Waterfall();
 
+  function modeUsesFrequencyAxis(mode = state.mode) {
+    return mode === 'spectrogram' ||
+      mode === 'reassigned' ||
+      mode === 'harmonic' ||
+      mode === 'percussive' ||
+      mode === 'waterfall';
+  }
+
   // Hover readout — time / frequency / dB / nearest note.
   const hoverEl = $('hoverReadout');
   const NOTE_NAMES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
@@ -147,15 +155,16 @@
     } else {
       tSec = audio.getCurrentTime();
     }
-    const hz = renderer.yToFreq(yPx, h);
-    const hzStr = hz < 1000 ? hz.toFixed(0) + ' Hz' : (hz / 1000).toFixed(2) + ' kHz';
-    const note = hzToNote(hz);
-    const db = dbAt(tSec, hz);
+    const showFreqReadout = modeUsesFrequencyAxis(state.mode);
+    const hz = showFreqReadout ? renderer.yToFreq(yPx, h) : null;
+    const hzStr = hz == null ? '' : (hz < 1000 ? hz.toFixed(0) + ' Hz' : (hz / 1000).toFixed(2) + ' kHz');
+    const note = hz == null ? '' : hzToNote(hz);
+    const db = hz == null ? null : dbAt(tSec, hz);
     const dbStr = (db != null && isFinite(db)) ? `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB` : '';
     hoverEl.classList.add('visible');
     hoverEl.innerHTML = `
       <span class="hr-t">${tSec != null ? formatTime(tSec) : '--:--'}</span>
-      <span class="hr-f">${hzStr}</span>
+      ${hzStr ? `<span class="hr-f">${hzStr}</span>` : ''}
       ${note ? `<span class="hr-n">${note}</span>` : ''}
       ${dbStr ? `<span class="hr-db">${dbStr}</span>` : ''}
     `;
@@ -581,6 +590,7 @@
       fPan: +$('fPan').value,
       fftSize: state.fftSize,
       loop: state.loop,
+      showFrequencyGrid: modeUsesFrequencyAxis(state.mode),
     });
     drawLegend();
   }
@@ -599,7 +609,7 @@
   // the per-frame cursor updates during playback — so the EQ curve (drawn on
   // the overlay canvas) is not wiped every animation frame.
   renderer.onOverlayDraw = function (ctx, W, H) {
-    if (!state.eq || !state.eqShowCurve || state.eq.bypass) return;
+    if (!modeUsesFrequencyAxis(state.mode) || !state.eq || !state.eqShowCurve || state.eq.bypass) return;
     // Reuse the same axis mapping as drawEqCurveOverlay below.
     const fmin = Math.max(1, renderer.minFreq);
     const fmax = Math.max(fmin + 1, Math.min(renderer.sampleRate / 2, renderer.maxFreq));
@@ -645,6 +655,8 @@
       if (!state.altGrids.mel) state.altGrids.mel = window.Visualizations.buildMelGrid(raw, state.track.sampleRate, 128, state.minFreq, state.maxFreq);
       const g = state.altGrids.mel;
       window.Visualizations.drawHeatGrid(ctx, w, h, g.grid, g.nFrames, g.nRows, state.colorMap, {
+        minDb: state.minDb, maxDb: state.maxDb,
+        sourceMinDb: g.minDb, sourceMaxDb: g.maxDb,
         gamma: state.gamma, tPan: +$('tPan').value, tZoom: +$('tZoom').value,
         fPan: +$('fPan').value, fZoom: +$('fZoom').value
       });
@@ -669,6 +681,8 @@
       if (!state.altGrids.cochlea) state.altGrids.cochlea = window.Visualizations.buildCochleagramGrid(raw, state.track.sampleRate, 96);
       const g = state.altGrids.cochlea;
       window.Visualizations.drawHeatGrid(ctx, w, h, g.grid, g.nFrames, g.nRows, state.colorMap, {
+        minDb: state.minDb, maxDb: state.maxDb,
+        sourceMinDb: g.minDb, sourceMaxDb: g.maxDb,
         gamma: state.gamma, tPan: +$('tPan').value, tZoom: +$('tZoom').value,
         fPan: 0, fZoom: 1
       });
@@ -677,6 +691,8 @@
       if (!state.altGrids.reassigned) state.altGrids.reassigned = window.Visualizations.buildReassignedGrid(raw);
       const g = state.altGrids.reassigned;
       window.Visualizations.drawHeatGrid(ctx, w, h, g.grid, g.nFrames, g.nRows, state.colorMap, {
+        minDb: state.minDb, maxDb: state.maxDb,
+        sourceMinDb: g.minDb, sourceMaxDb: g.maxDb,
         gamma: state.gamma, tPan: +$('tPan').value, tZoom: +$('tZoom').value,
         fPan: +$('fPan').value, fZoom: +$('fZoom').value
       });
@@ -685,6 +701,8 @@
       if (!state.altGrids.cepstrum) state.altGrids.cepstrum = window.Visualizations.buildCepstrumGrid(raw, state.track.fftSize);
       const g = state.altGrids.cepstrum;
       window.Visualizations.drawHeatGrid(ctx, w, h, g.grid, g.nFrames, g.nRows, state.colorMap, {
+        minDb: state.minDb, maxDb: state.maxDb,
+        sourceMinDb: g.minDb, sourceMaxDb: g.maxDb,
         gamma: state.gamma, tPan: +$('tPan').value, tZoom: +$('tZoom').value,
         fPan: 0, fZoom: 1
       });
@@ -798,10 +816,11 @@
         state.scalogram = m;
         status('Scalogram ready.', 'ok');
         drawScalogram();
+        w.terminate();
       } else if (m.type === 'error') {
         status('Scalogram error: ' + m.message, 'error');
+        w.terminate();
       }
-      w.terminate();
     };
   }
 
@@ -811,6 +830,8 @@
     const w = specCanvas.width, h = specCanvas.height;
     const g = state.scalogram;
     window.Visualizations.drawHeatGrid(ctx, w, h, g.grid, g.nFrames, g.nScales, state.colorMap, {
+      minDb: state.minDb, maxDb: state.maxDb,
+      sourceMinDb: g.minDb, sourceMaxDb: g.maxDb,
       gamma: state.gamma, tPan: +$('tPan').value, tZoom: +$('tZoom').value,
       fPan: 0, fZoom: 1
     });

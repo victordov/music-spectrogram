@@ -5,12 +5,15 @@
   'use strict';
 
   function drawHeatGrid(ctx, w, h, grid, nCols, nRows, colormap, {
-    minDb = -80, maxDb = 0, gamma = 1, tPan = 0, tZoom = 1, fPan = 0, fZoom = 1
+    minDb = -80, maxDb = 0, gamma = 1, tPan = 0, tZoom = 1, fPan = 0, fZoom = 1,
+    sourceMinDb = null, sourceMaxDb = null
   } = {}) {
     const img = ctx.createImageData(w, h);
     const data = img.data;
     const lut = global.Colormaps.LUTS[colormap] || global.Colormaps.LUTS.viridis;
     const range = Math.max(1e-6, maxDb - minDb);
+    const hasSourceRange = Number.isFinite(sourceMinDb) && Number.isFinite(sourceMaxDb) && sourceMaxDb > sourceMinDb;
+    const sourceRange = hasSourceRange ? Math.max(1e-6, sourceMaxDb - sourceMinDb) : 0;
     const t0 = tPan, t1 = Math.min(1, tPan + 1 / tZoom);
     const f0 = fPan, f1 = Math.min(1, fPan + 1 / fZoom);
     for (let px = 0; px < w; px++) {
@@ -21,8 +24,14 @@
         const ff = f1 - (py / (h - 1)) * (f1 - f0); // top-high
         const row = Math.max(0, Math.min(nRows - 1, Math.floor(ff * (nRows - 1))));
         const v = grid[base + row] / 255;
-        // Re-scale to user's dB window (grid is already normalized).
+        // dB-based views are normalized when built; reconstruct their source dB
+        // value first so the live Min/Max dB controls can re-window them.
         let t = v;
+        if (hasSourceRange) {
+          const db = sourceMinDb + v * sourceRange;
+          t = (db - minDb) / range;
+          t = Math.max(0, Math.min(1, t));
+        }
         if (gamma !== 1) t = Math.pow(t, gamma);
         const ci = Math.min(255, Math.max(0, (t * 255) | 0)) * 3;
         const di = (py * w + px) * 4;
@@ -135,7 +144,7 @@
       const t = Math.max(0, Math.min(1, (tmp[i] - gmin) / range));
       grid[i] = (t * 255) | 0;
     }
-    return { grid, nFrames, nRows: nBins };
+    return { grid, nFrames, nRows: nBins, minDb: gmin, maxDb: gmax };
   }
 
   // Cepstrum grid (quefrency vs time).
@@ -159,7 +168,7 @@
       const t = Math.max(0, Math.min(1, (tmp[i] - gmin) / range));
       grid[i] = (t * 255) | 0;
     }
-    return { grid, nFrames, nRows };
+    return { grid, nFrames, nRows, minDb: gmin, maxDb: gmax };
   }
 
   // Feature plots: centroid, bandwidth, rolloff, flux, rms over time.
